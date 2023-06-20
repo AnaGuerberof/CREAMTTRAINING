@@ -1,0 +1,710 @@
+---
+title: "PE training and creativity"
+author: "Ana Guerberof Arenas"
+date: "Generated on: `r date()`"
+output:
+  html_document:
+    code_folding: show
+    number_sections: yes
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+---
+
+# Load Libraries
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(viridis)
+library(hrbrthemes)
+library(car) # leveneTest
+library(ltm)
+library(lme4)
+library(broom)
+library(emmeans)
+library(rstatix)
+library(carData)
+library(RcmdrMisc)
+library(conover.test)
+library(gmodels)
+library(lme4)
+library("blmeco")
+
+```
+
+
+# Creative Shift analysis
+
+```{r}
+
+# Read data from individual file
+#install.packages("readxl")
+library(readxl)
+#install.packages("sqldf")
+library("sqldf")
+#install.packages("reshape2")
+library(reshape2)
+#install.packages("irr")
+library(irr)
+library(dplyr)
+library('plyr')
+library(epiDisplay)
+
+# Read data for creative shifts
+
+dfcs <- read.csv("CreativeShiftsperUnitError.csv")
+
+```
+
+# Preprocess Data
+
+```{r}
+#Responses per modality
+table(dfcs$modality) # there are more UCPs done in PE than HT 388/712. There are 1100 UCPs, so 65% are in PE and 35% are in HT.
+
+# Number of lines per phase
+table(dfcs$phase) # There are 550 per phase so this is equal
+table(dfcs$phase, dfcs$modality) # show number of responses per phase and modality
+
+# total numbers of creative shifts and reproductions
+table(dfcs$reproduction, dfcs$phase) # There are more reproductions overall before the training
+table(dfcs$creative_shift, dfcs$phase) # There are more creative shifts after the training
+
+# total number of errors per phase and modality
+
+table(dfcs$Error, dfcs$phase) # Number of errors does not affect phase
+table(dfcs$Error, dfcs$modality)
+table(dfcs$Error, dfcs$classification)
+
+# Group by mean_creative_shift using dplyr
+agg_tbl <- dfcs %>% group_by(translator, phase) %>% 
+  summarise(mean_creative_shift = mean(creative_shift),
+            .groups = 'drop')
+agg_tbl
+
+# All translators except T8 and T11 have higher values in Post, T10 has the same mean values.
+
+# Group by sum using dplyr
+agg_tbl <- dfcs %>% group_by(translator, phase) %>% 
+  summarise(mean_error_number = mean(reproduction),
+            .groups = 'drop')
+agg_tbl
+
+# All translators have more reproductions Pre except T1, T2 and T8, T7 has the same.
+
+# Mean creative shifts per modality
+agg_tbl <- dfcs %>% group_by(translator, modality) %>% 
+  summarise(mean_creative_shift = mean(creative_shift),
+            .groups = 'drop')
+agg_tbl
+
+# All translators except T5 have more CS in HT than PE.
+
+agg_tbl <- dfcs %>% group_by(translator, modality) %>% 
+  summarise(mean_reproduction = mean(reproduction),
+            .groups = 'drop')
+agg_tbl
+
+# All translators have more reproductions in PE than in HT except T5.
+
+
+# Convert tibble to df
+#df2 <- agg_tbl %>% as.data.frame()
+#df2
+
+```
+
+
+# Descriptive values for classification and creative shifts
+```{r}
+
+xtab <- xtabs(~classification + phase, data = dfcs)
+xtab
+addmargins(xtab) # more reproduction Pre, more Abstraction, Concretisation, Omission in Post
+
+xtab <- xtabs(~creative_shift + modality + phase, data = dfcs)
+xtab
+addmargins(xtab) # The number of strings are different so we need a frequency table
+
+
+```
+
+
+# Create one column Classification with number for frequency tables
+```{r}
+# New variable is created to manipulate
+dfcs$classification_n <- dfcs$classification
+
+# The same value is assigned to all creative shifts, then to reproduction, and then to omission
+dfcs$classification_n[dfcs$classification_n %in% c("Abstraction","Concretisation","Modification")] <- 1
+dfcs$classification_n[dfcs$classification_n %in% c("Reproduction")] <- 2
+dfcs$classification_n[dfcs$classification_n %in% c("Omission")] <- 3
+dfcs$classification_n[dfcs$classification_n %in% c(NA)] <- 4
+
+# Factor the variable to create simple frequency tables
+#factor(dfcs$classification_n)
+table(dfcs$classification_n)
+table(dfcs$classification_n, dfcs$modality)
+table(dfcs$classification_n, dfcs$phase)
+table(dfcs$classification_n, dfcs$Error)
+
+
+# To create first frequency table
+# install.packages("plyr")
+library('plyr')
+count(dfcs, 'classification_n')
+
+# how to make frequency table in r (nicer version)
+# install.packages("epiDisplay")
+library(epiDisplay)
+tab1(dfcs$classification_n, sort.group = "decreasing", cum.percent = TRUE)
+
+# Create a bar plot
+x <- table(dfcs$classification_n)
+barplot(x)
+
+# Create a bar plot for example per modality
+
+tbl <- with(dfcs, table(classification_n, modality))
+
+barplot(tbl, beside = TRUE, legend = TRUE)
+
+ggplot(as.data.frame(tbl), aes(factor(classification_n), Freq, fill = modality)) +     
+  geom_col(position = 'dodge')
+
+# Create a bar plot for example per phase
+
+tbl2 <- with(dfcs, table(classification_n, phase))
+
+barplot(tbl2, beside = TRUE, legend = TRUE)
+
+ggplot(as.data.frame(tbl2), aes(factor(classification_n), Freq, fill = phase)) +     
+  geom_col(position = 'dodge')
+
+# Create a bar plot for example per ucp_id
+tbl3 <- with(dfcs, table(creative_shift, UCP_ID))
+barplot(tbl3, beside = TRUE, legend = TRUE)
+
+```
+
+
+# Cross tabulation using sjPlot
+```{r}
+
+# https://bookdown.org/wadetroberts/r-you-ready-for-r/cross-tabulation.html
+#This code will check that required packages for this chapter are installed, install them if needed, and load them into your session.
+
+req <- substitute(require(x, character.only = TRUE))
+libs<-c("sjPlot")
+sapply(libs, function(x) eval(req) || {install.packages(x); eval(req)})
+
+# Table of frequencies accoring to modality
+
+sjPlot::tab_xtab(var.row = dfcs$classification_n, var.col = dfcs$modality, show.col.prc = TRUE, show.legend = TRUE)
+
+
+## mosaicplot 
+ object <- table(dfcs$modality, dfcs$classification_n)
+        mosaicplot(object, main = "Classification per modality", xlab = "Modality", ylab = "UCPs classification", color = TRUE)
+        
+## sjPlot’s plot_xtab() function
+sjPlot::plot_xtab(dfcs$modality,dfcs$classification_n, margin = "row", bar.pos = "stack", coord.flip = TRUE)
+
+# Table of frequencies accoring to phase
+
+sjPlot::tab_xtab(var.row = dfcs$classification_n, var.col = dfcs$phase, show.col.prc = TRUE)
+
+## mosaicplot 
+ object <- table(dfcs$phase, dfcs$classification_n)
+        mosaicplot(object, main = "Classification per phase", xlab = "Modality", ylab = "Classification", color = TRUE)
+        
+## sjPlot’s plot_xtab() function
+sjPlot::plot_xtab(dfcs$phase,dfcs$classification_n, margin = "row", bar.pos = "stack", coord.flip = TRUE, wrap.legend.labels = 10, dot.size = 1, expand.grid = T, wrap.labels = 7.5)
+
+
+# Table of frequencies according to error
+sjPlot::tab_xtab(var.row = dfcs$classification_n, var.col = dfcs$Error, title = "Classification according to errors", show.col.prc = TRUE)
+
+
+## mosaicplot 
+ object <- table(dfcs$Error, dfcs$classification_n)
+        mosaicplot(object, main = "Classification according to errors", xlab = "Errors", ylab = "Classification", color = TRUE)
+        
+## sjPlot’s plot_xtab() function
+sjPlot::plot_xtab(dfcs$Error,dfcs$classification_n, margin = "row", bar.pos = "stack", coord.flip = TRUE)
+
+```
+
+
+# Generalized Linear Mixed-Effects Models for binomial data with creative shifts, reproductions, omissions and NA.
+```{r}
+# Training the model for creative shifts
+
+logistic_model <- glmer(creative_shift ~ phase + modality + (1|translator), family = binomial(), data = dfcs)
+# Checking the model
+summary(logistic_model)
+
+dispersion_glmer(logistic_model)
+
+
+# Over-dispersion check using Bolker et al.
+
+overdisp_fun <- function(model) {
+    rdf <- df.residual(model)
+    rp <- residuals(model,type="pearson")
+    Pearson.chisq <- sum(rp^2)
+    prat <- Pearson.chisq/rdf
+    pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE)
+    c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)
+}
+
+overdisp_fun(logistic_model)
+# NO overdispersion
+
+# Training the model for reproductions
+
+logistic_model2 <- glmer(reproduction ~ phase + modality + (1|translator), family = binomial(), data = dfcs)
+# Checking the model
+summary(logistic_model2)
+dispersion_glmer(logistic_model2)
+
+overdisp_fun(logistic_model2)
+
+# Training the model for omissions
+
+logistic_model3 <- glmer(omission ~ phase + modality + (1|translator), family = binomial(), data = dfcs)
+# Checking the model
+summary(logistic_model3)
+dispersion_glmer(logistic_model3)
+
+overdisp_fun(logistic_model3)
+
+
+# Training the model for omissions
+
+logistic_model4 <- glmer(NA. ~ phase + modality + (1|translator), family = binomial(), data = dfcs)
+# Checking the model
+summary(logistic_model4)
+dispersion_glmer(logistic_model4) # There is a isSingular error probably because there are too many 0 values.
+
+overdisp_fun(logistic_model3)
+
+
+```
+
+
+# Preprocess Acceptability Data
+
+```{r}
+# Load data with errors
+
+df <- read.csv("AcceptabilityStringsWordcount.csv")
+
+# Factors and int
+df$phase <- as.factor(df$phase)
+df$phase
+df$modality <- as.factor(df$modality)
+df$ï..sentence <- as.factor(df$ï..sentence)
+df$chapter <- as.factor(df$chapter)
+df$translator <- as.factor(df$translator)
+
+str(df)
+#Responses per modality
+table(df$modality)
+
+
+# Number of lines per phase
+table(df$phase) # show number of responses per phase
+table(df$phase, df$modality) # show number of responses per phase and modality
+
+# Create variables errors points per words and error number per word
+
+df$errorpointword <- df$error_point/df$wordcount
+df$errornumberword <- df$error_number/df$wordcount
+
+# To get descriptive statics per phase and modality
+
+library(dplyr)
+
+group_by(df, modality) %>%
+  summarise(
+    mean = mean(error_point, na.rm = TRUE),
+    sd = sd(error_point, na.rm = TRUE),
+    sum = sum(error_point, na.rm = TRUE)
+  )
+
+group_by(df, phase) %>%
+  summarise(
+    mean = mean(error_point, na.rm = TRUE),
+    sd = sd(error_point, na.rm = TRUE),
+    sum = sum(error_point, na.rm = TRUE)
+  )
+#install.packages('summarytools')
+library(summarytools)
+#stby(list(
+#  x = df$error_point, # error_point per phase
+#  y = df$phase
+#),
+#INDICES = df$modality, # for each modality
+#FUN = ctable # ctable for cross-tabulation
+#)
+
+
+# Split chapters
+ch18 <- df[df$chapter == "18", ]
+ch2 <- df[df$chapter == "2", ]
+ch6 <- df[df$chapter == "6", ]
+
+# Group by sum_error_point using dplyr
+agg_tbl <- df %>% group_by(translator, phase) %>% 
+  summarise(mean_error_point = mean(error_point),
+            .groups = 'drop')
+agg_tbl
+
+# These translators T2, T6, T7, T8 have fewer error points in the post phase and the rest more error points post.
+
+# Group by sum using dplyr
+agg_tbl <- df %>% group_by(translator, phase) %>% 
+  summarise(mean_error_number = mean(error_number),
+            .groups = 'drop')
+agg_tbl
+
+# These translators have fewer errors post  T2, T5, T6, T8 and T1 equal number, the rest more errors.
+
+# Mean error point per modality
+agg_tbl <- df %>% group_by(translator, modality) %>% 
+  summarise(mean_errorpoint = mean(error_point),
+            .groups = 'drop')
+agg_tbl
+
+# All translators except T5 and T7 have more errors in HT.
+
+agg_tbl <- df %>% group_by(translator, modality) %>% 
+  summarise(mean_errornumber = mean(error_number),
+            .groups = 'drop')
+agg_tbl
+
+# All translators except T5 have more errors in HT.
+
+
+# Group error points per sentence to know which ones were more difficult for students
+
+agg_tbl <- df %>% group_by(ï..sentence) %>% 
+  summarise(mean_error_point = mean(error_point),
+            .groups = 'drop')
+agg_tbl
+
+
+agg_tbl <- df %>% group_by(ï..sentence, modality) %>% 
+  summarise(mean_error_number = mean(error_number),
+            .groups = 'drop')
+agg_tbl
+
+
+# Convert tibble to df
+#df2 <- agg_tbl %>% as.data.frame()
+#df2
+
+```
+
+
+
+
+# Errors according to phase and modality and creative shifts
+
+```{r}
+# Training the model for errors
+
+logistic_model <- glmer(Error ~ phase + modality + (1|translator), family = binomial(), data = dfcs)
+# Checking the model
+summary(logistic_model)
+
+dispersion_glmer(logistic_model)
+
+
+# Over-dispersion check using Bolker et al.
+
+overdisp_fun <- function(model) {
+    rdf <- df.residual(model)
+    rp <- residuals(model,type="pearson")
+    Pearson.chisq <- sum(rp^2)
+    prat <- Pearson.chisq/rdf
+    pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE)
+    c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)
+}
+
+overdisp_fun(logistic_model)
+# No overdispersion
+
+# Let's include the creative shifts to see if it is a factor for errors
+logistic_model <- glmer(Error ~ phase+ modality + creative_shift + (1|translator), family = binomial(), data = dfcs)
+# Checking the model
+summary(logistic_model)
+
+
+dispersion_glmer(logistic_model)
+
+```
+
+
+# Plots with error points
+```{r}
+
+# Let's plot first the error_point per phase, then per modality and then the error points per word
+library(forcats)
+
+# The graphs showed Post before Pre so we refactored the variable.
+df$phase <- factor(df$phase, levels = c("Pre", "Post"))
+
+ggplot(data =df,mapping = aes(x = phase,y = error_point))+geom_boxplot(aes(fill=phase), show.legend = TRUE)+
+     ggtitle("Error points") +
+    xlab("Phase")+
+    ylab("Error points per phase")
+
+ggplot(data =df,mapping = aes(x = phase,y = error_point))+geom_boxplot(aes(fill=modality), show.legend = TRUE)+
+     ggtitle("Error points") +
+    xlab("Phase")+
+    ylab("Error points per modality") 
+
+ggplot(data =df,mapping = aes(x = phase,y = error_number))+geom_boxplot(aes(fill=phase), show.legend = TRUE)+
+     ggtitle("Error number") +
+    xlab("Phase")+
+    ylab("Error number per phase") 
+
+ggplot(data =df,mapping = aes(x = phase,y = error_number))+geom_boxplot(aes(fill=modality), show.legend = TRUE)+
+     ggtitle("Error number") +
+    xlab("Phase")+
+    ylab("Error number per modality")
+
+ggplot(data =df,mapping = aes(x = phase,y = errorpointword))+geom_boxplot(aes(fill=modality), show.legend = TRUE)+
+     ggtitle("Error points") +
+    xlab("Phase")+
+    ylab("Error points per word and modality")
+
+ggplot(data =df,mapping = aes(x = phase,y = errornumberword))+geom_boxplot(aes(fill=modality), show.legend = TRUE)+
+     ggtitle("Error number") +
+    xlab("Phase")+
+    ylab("Error number per word and modality") 
+
+
+```
+
+
+# Normality and Wilcoxon tests for non-parametric data
+```{r}
+hist(df$error_point)
+hist(log(df$error_point))
+mean(df$error_point)
+var(df$error_point)
+
+hist(df$errorpointword)
+hist(log(df$errorpointword))
+hist(df$errornumberword)
+hist(log(df$errornumberword))
+
+
+# Because the data is not normally distributed we can use a non-parametric test for an intra-subject design. This initially tests confirm the plots. We can try to fit some models to this data in the next section.
+
+wilcox.test(error_point ~ phase, data=df) # no significance
+wilcox.test(error_point ~ modality, data=df) # significance. The modality is a factor in the error points. 
+
+wilcox.test(errorpointword ~ phase, data=df) # no significance
+wilcox.test(errorpointword ~ modality, data=df) # significance. Here the data is normalized per word.
+
+wilcox.test(error_number ~ phase, data=df) # no significance
+wilcox.test(error_number ~ modality, data=df) # significance. The modality is a factor in the error number.
+
+wilcox.test(errornumberword ~ phase, data=df) # no significance
+wilcox.test(errornumberword ~ modality, data=df) # significance. Here the data is normalized per word.
+
+```
+
+
+# Fitting Generalized Linear Mixed-Effects Models
+```{r}
+
+# GLM models with poisson family type might be better for not normal and intra-subject data?
+
+hist(df$error_point)
+mean(df$error_point)
+var(df$error_point) # Variance is not equal to the mean.Variance is higher. Overdispersion
+
+hist(df$error_number)
+mean(df$error_number)
+var(df$error_number) # Variance is not equal to the mean.Variance is higher so there is dispersion of the data. Overdispersion.
+
+library(lme4)
+# we see the number of error points according to phase,  modality and wordcount 
+#(fixed effects) with the translator, chapter and strings (random effects)
+
+modela <- glmer(error_point ~ phase + modality + wordcount + (1|translator) + (1|chapter/ï..sentence), family = poisson, data = df)
+summary(modela)#  significant fewer error points per phase and pe
+
+# I take out chapter to avoid the error "The boundary (singular) fit: see help('isSingular')"
+
+# If I do not include the chapter because it has 0 effect, I do not get the error. There are fewer error points in the Pre phase but also in the modality PE. There are also more errors as the wordcounts are higher.
+
+modela <- glmer(error_point ~ phase + modality + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = df)
+summary(modela)
+
+# Over-dispersion check
+
+library("blmeco")
+dispersion_glmer(modela)
+blmeco::dispersion_glmer(modela)
+
+# Over-dispersion check using Bolker et al.
+
+overdisp_fun <- function(model) {
+    rdf <- df.residual(model)
+    rp <- residuals(model,type="pearson")
+    Pearson.chisq <- sum(rp^2)
+    prat <- Pearson.chisq/rdf
+    pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE)
+    c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)
+}
+
+overdisp_fun(modela)
+
+# Since there is overdispersion we fit a non binominal negative model
+
+modelc <- glmer.nb(error_point ~ phase + modality + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = df)
+summary(modelc) # There are fewer errors points in PE and more errors if the wordcount is higher.
+
+
+modelb <- glmer(error_number ~ phase+ modality + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = df)
+summary(modelb) # There are fewer errors in Pre, PE and more errors if the wordcount is higher.
+
+
+# Over-dispersion check
+
+dispersion_glmer(modelb)
+
+overdisp_fun(modelb)
+
+AIC(modelb) - AIC(modela)
+
+```
+
+
+# Fitting Generalized Linear Mixed-Effects Models on PE and HT
+```{r}
+
+PE <- df[df$modality == "PE",]
+
+HT <- df[df$modality == "HT",]
+
+
+group_by(PE, phase) %>%
+  summarise(
+    mean = mean(error_point, na.rm = TRUE),
+    sd = sd(error_point, na.rm = TRUE),
+    sum = sum(error_point, na.rm = TRUE)
+  )
+
+group_by(HT, phase) %>%
+  summarise(
+    mean = mean(error_point, na.rm = TRUE),
+    sd = sd(error_point, na.rm = TRUE),
+    sum = sum(error_point, na.rm = TRUE))
+
+ggplot(data =PE,mapping = aes(x = phase,y = error_point))+geom_boxplot(aes(fill=phase), show.legend = TRUE)+
+     ggtitle("Error points") +
+    xlab("Phase")+
+    ylab("Error points") 
+
+ggplot(data = HT,mapping = aes(x = phase,y = error_point))+geom_boxplot(aes(fill=phase), show.legend = TRUE)+
+     ggtitle("Error points") +
+    xlab("Phase")+
+    ylab("Error points") 
+
+modeld <- glmer(error_point ~ phase + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = PE)
+summary(modeld)
+
+# Over-dispersion check. This checks with PE
+blmeco::dispersion_glmer(modeld)
+
+modele <- glmer(error_point ~ phase + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = HT)
+summary(modele)
+
+# Over-dispersion check. This does not check with HT
+blmeco::dispersion_glmer(modele)
+
+
+# Negative binomial model for PE and HT
+
+modele <- glmer.nb(error_point ~ phase + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = HT)
+summary(modele)
+
+```
+
+# Plots with error points per chapter
+```{r}
+
+# Checking to see if there are differences depending on the chapter
+
+library(lme4)
+
+# CH18 was always done in PE
+modelCh18 <- glmer(error_point ~ phase + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = ch18)
+summary(modelCh18) # there are no significant differences only in the intercept and wordcount
+
+blmeco::dispersion_glmer(modelCh18)
+
+
+# CH18 was always done in PE
+modelb <- glmer(error_number ~ phase + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = ch18)
+summary(modela) # there are no significant differences
+
+# CH2 was done in PE and HT
+modelCh2 <- glmer(error_point ~ phase + modality + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = ch2)
+summary(modelCh2) # there are less errors in PE and wordcount higher
+
+blmeco::dispersion_glmer(modelCh2)
+
+# CH6 was done in PE and HT
+modelCh6 <- glmer(error_point ~ phase + modality + wordcount + (1|translator) + (1|ï..sentence), family = poisson, data = ch6)
+summary(modelCh6) # there are significant differences. The modality PE seems to have fewer errors than HT and the pre phase also has fewer error points.
+
+
+blmeco::dispersion_glmer(modelCh6)
+
+```
+
+# Linear regression models errorpointsperword
+```{r}
+
+# Let's see if linear regressions models can fit into the errorpointperword variable
+library(lmerTest)
+m1 <- lmer(errorpointword ~ phase + modality + wordcount + (1|translator) + (1|ï..sentence), data = df)
+
+summary(m1)
+anova(m1)
+
+# We need to check the assumptions here which might not be met TBD
+
+```
+
+# Linear regression models errornumberperword
+```{r}
+
+# Let's see if linear regressions models can fit into the errornumberperword variable
+
+m2 <- lmer(errornumberword ~ phase + modality + wordcount + (1|translator) + (1|ï..sentence), data = df)
+
+summary(m2)
+anova(m2)
+
+plot(m2)
+qqnorm(resid(m2))
+
+# We need to check the assumptions here which might not be met TBD
+
+```
+
+
+
+```
+
+
